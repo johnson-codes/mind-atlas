@@ -5,62 +5,139 @@
   const PARENT = {};
   REGIONS.forEach(r => (r.children || []).forEach(c => (PARENT[c] = r.id)));
   const NAT = { cortex: "#f1c6ae", deep: "#e7aa9a", stem: "#e6b39e", cbl: "#ecbaa5", gland: "#dd9a8c", wm: "#f7e4d6" };
-  const VIEW_HINT = {
-    lateral: "Outside view — left side of the brain, front facing left. Hover or tap any region.",
-    medial: "Inside view — brain cut down the middle. Hippocampus and amygdala are shown projected; basal ganglia dashed."
-  };
 
   const store = {
     get(k, d) { try { const v = localStorage.getItem("mindatlas:" + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
     set(k, v) { try { localStorage.setItem("mindatlas:" + k, JSON.stringify(v)); } catch {} }
   };
 
-  const state = { view: "lateral", sel: null, colored: store.get("colored", false), labels: store.get("labels", false) };
-  const inView = (id, view) => SHAPES[view].some(s => !s.deco && s.id === id);
+  const state = { sel: null, colored: store.get("colored", false), labels: store.get("labels", false) };
+  const stage = $("#stage"), tip = $("#tip"), wrap = $("#stageWrap");
+  let viewer = null;
 
-  /* ---------- SVG ---------- */
-  function buildSVG(view) {
-    const L = { under: "", cortex: "", over: "" };
-    let labels = "";
-    for (const s of SHAPES[view]) {
-      if (s.deco) { L[s.layer] += `<path d="${s.d}" class="deco ${s.cls}"/>`; continue; }
-      const r = R[s.id];
-      L[s.layer] += `<path d="${s.d}" class="region${s.dashed ? " dashed" : ""}" data-id="${r.id}" style="--c:${r.color};--n:${NAT[r.kind]}" tabindex="0" role="button" aria-label="${r.name}"/>`;
-      labels += `<text x="${s.lx}" y="${s.ly}" class="lbl" data-for="${r.id}">${r.short}</text>`;
+  function showTip(id, cx, cy) {
+    if (!id || cx == null) { tip.hidden = true; return; }
+    const box = wrap.getBoundingClientRect();
+    tip.textContent = R[id].name;
+    tip.style.left = cx - box.left + "px";
+    tip.style.top = cy - box.top + "px";
+    tip.hidden = false;
+  }
+
+  /* ---------- 2D diagram viewer (fallback when 3D isn't available) ---------- */
+  function create2D() {
+    let view = "lateral";
+    const inView = (id, v) => SHAPES[v].some(s => !s.deco && s.id === id);
+
+    function buildSVG(v) {
+      const L = { under: "", cortex: "", over: "" };
+      let labels = "";
+      for (const s of SHAPES[v]) {
+        if (s.deco) { L[s.layer] += `<path d="${s.d}" class="deco ${s.cls}"/>`; continue; }
+        const r = R[s.id];
+        L[s.layer] += `<path d="${s.d}" class="region${s.dashed ? " dashed" : ""}" data-id="${r.id}" style="--c:${r.color};--n:${NAT[r.kind]}" tabindex="0" role="button" aria-label="${r.name}"/>`;
+        labels += `<text x="${s.lx}" y="${s.ly}" class="lbl" data-for="${r.id}">${r.short}</text>`;
+      }
+      return `<svg viewBox="100 60 630 500" class="brain${state.colored ? " colored" : ""}${state.labels ? " show-labels" : ""}" role="img" aria-label="Interactive brain diagram">
+        <defs>
+          <clipPath id="clip-${v}"><path d="${OUTLINE}"/></clipPath>
+          <radialGradient id="shade-${v}" cx="38%" cy="28%" r="80%">
+            <stop offset="0" stop-color="#fff" stop-opacity=".35"/>
+            <stop offset=".55" stop-color="#fff" stop-opacity="0"/>
+            <stop offset="1" stop-color="#5a1a1a" stop-opacity=".22"/>
+          </radialGradient>
+        </defs>
+        ${L.under}
+        <g clip-path="url(#clip-${v})"><path d="${OUTLINE}" class="base"/>${L.cortex}</g>
+        <path d="${OUTLINE}" class="shade" fill="url(#shade-${v})"/>
+        <path d="${OUTLINE}" class="outline"/>
+        ${L.over}
+        <g class="labels">${labels}</g>
+      </svg>`;
     }
-    return `<svg viewBox="100 60 630 500" class="brain${state.colored ? " colored" : ""}${state.labels ? " show-labels" : ""}" role="img" aria-label="Interactive brain diagram">
-      <defs>
-        <clipPath id="clip-${view}"><path d="${OUTLINE}"/></clipPath>
-        <radialGradient id="shade-${view}" cx="38%" cy="28%" r="80%">
-          <stop offset="0" stop-color="#fff" stop-opacity=".35"/>
-          <stop offset=".55" stop-color="#fff" stop-opacity="0"/>
-          <stop offset="1" stop-color="#5a1a1a" stop-opacity=".22"/>
-        </radialGradient>
-      </defs>
-      ${L.under}
-      <g clip-path="url(#clip-${view})"><path d="${OUTLINE}" class="base"/>${L.cortex}</g>
-      <path d="${OUTLINE}" class="shade" fill="url(#shade-${view})"/>
-      <path d="${OUTLINE}" class="outline"/>
-      ${L.over}
-      <g class="labels">${labels}</g>
-    </svg>`;
-  }
+    function apply() {
+      const kids = state.sel ? R[state.sel].children || [] : [];
+      $$("#stage .region").forEach(p => {
+        p.classList.toggle("active", p.dataset.id === state.sel);
+        p.classList.toggle("child", kids.includes(p.dataset.id));
+      });
+      $$("#stage .lbl").forEach(t => t.classList.toggle("show", t.dataset.for === state.sel));
+    }
+    function render() { stage.innerHTML = buildSVG(view); apply(); }
 
-  function renderStage() {
-    $("#stage").innerHTML = buildSVG(state.view);
-    $("#viewHint").textContent = VIEW_HINT[state.view];
-    $$(".seg-btn").forEach(b => b.classList.toggle("active", b.dataset.view === state.view));
-    applySel();
-  }
-
-  function applySel() {
-    const kids = state.sel ? R[state.sel].children || [] : [];
-    $$("#stage .region").forEach(p => {
-      p.classList.toggle("active", p.dataset.id === state.sel);
-      p.classList.toggle("child", kids.includes(p.dataset.id));
+    stage.classList.add("is-2d");
+    stage.addEventListener("click", e => { const p = e.target.closest(".region"); if (p) select(p.dataset.id, { fly: false }); });
+    stage.addEventListener("keydown", e => {
+      const p = e.target.closest(".region");
+      if (p && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); select(p.dataset.id, { fly: false }); }
     });
-    $$("#stage .lbl").forEach(t => t.classList.toggle("show", t.dataset.for === state.sel));
-    $$("#chips .chip").forEach(c => c.classList.toggle("active", c.dataset.region === state.sel));
+    stage.addEventListener("pointermove", e => {
+      const p = e.target.closest(".region");
+      showTip(p && e.pointerType !== "touch" ? p.dataset.id : null, e.clientX, e.clientY);
+    });
+    stage.addEventListener("pointerleave", () => showTip(null));
+    render();
+
+    return {
+      kind: "2d",
+      modes: [{ id: "lateral", label: "Outside view" }, { id: "medial", label: "Inside view" }],
+      hints: {
+        lateral: "Outside view — left side of the brain, front facing left. Hover or tap any region.",
+        medial: "Inside view — brain cut down the middle. Hippocampus and amygdala are shown projected; basal ganglia dashed."
+      },
+      get mode() { return view; },
+      setMode(m) { view = m; render(); modeChanged(); },
+      setSelected: apply,
+      setColored(b) { $("#stage svg").classList.toggle("colored", b); },
+      setLabels(b) { $("#stage svg").classList.toggle("show-labels", b); },
+      reveal(id) {
+        if (inView(id, view)) return;
+        view = inView(id, "lateral") ? "lateral" : "medial";
+        render();
+        modeChanged();
+      }
+    };
+  }
+
+  /* ---------- Viewer toolbar ---------- */
+  function modeChanged() {
+    $$(".seg-btn").forEach(b => b.classList.toggle("active", b.dataset.mode === viewer.mode));
+    $("#viewHint").textContent = viewer.hints[viewer.mode];
+  }
+  function renderSegs() {
+    $("#modes").innerHTML = viewer.modes.map(m => `<button class="seg-btn" data-mode="${m.id}" role="tab">${m.label}</button>`).join("");
+    $$(".seg-btn").forEach(b => b.addEventListener("click", () => { viewer.setMode(b.dataset.mode); modeChanged(); }));
+    modeChanged();
+  }
+  function syncSpin() { $("#spinBtn").setAttribute("aria-pressed", !!(viewer && viewer.spin)); }
+
+  function initToolbar() {
+    const sel = $("#regionSelect");
+    const cats = [...new Set(REGIONS.map(r => r.cat))];
+    sel.innerHTML = `<option value="">The Brain (overview)</option>` + cats.map(c =>
+      `<optgroup label="${c}">${REGIONS.filter(r => r.cat === c).map(r => `<option value="${r.id}">${r.name}</option>`).join("")}</optgroup>`).join("");
+    sel.addEventListener("change", () => select(sel.value));
+
+    const lb = $("#labelsBtn"), cb = $("#colorBtn");
+    const sync = () => {
+      lb.setAttribute("aria-pressed", state.labels);
+      cb.setAttribute("aria-pressed", state.colored);
+      if (viewer) { viewer.setLabels(state.labels); viewer.setColored(state.colored); }
+    };
+    lb.addEventListener("click", () => { state.labels = !state.labels; store.set("labels", state.labels); sync(); });
+    cb.addEventListener("click", () => { state.colored = !state.colored; store.set("colored", state.colored); sync(); });
+    sync();
+
+    $("#spinBtn").addEventListener("click", () => { if (viewer && viewer.setSpin) { viewer.setSpin(!viewer.spin); syncSpin(); } });
+    $("#resetBtn").addEventListener("click", () => viewer && viewer.resetView && viewer.resetView());
+    $("#randomBtn").addEventListener("click", () => {
+      let r; do { r = REGIONS[Math.floor(Math.random() * REGIONS.length)]; } while (r.id === state.sel);
+      select(r.id);
+    });
+    $("#fsBtn").addEventListener("click", () => {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else wrap.requestFullscreen?.();
+    });
   }
 
   /* ---------- Panel ---------- */
@@ -79,7 +156,7 @@
         <p>It contains about <b>86 billion neurons</b> that communicate with chemical and electrical signals. Groups of neurons link up through long fibers called axons to form circuits, and different regions specialize in different jobs — while constantly working together.</p>
         <p>Alongside neurons are billions of <b>glial cells</b>, which support, protect and nourish them.</p>
         <div class="fact"><b>Fact of the day — ${f.name}:</b> ${f.fact}</div>
-        <div class="how"><b>How to explore:</b> click any region of the brain, pick one from the menu, or switch to the <b>Inside view</b> to see deep structures like the hippocampus and amygdala.</div>
+        <div class="how"><b>How to explore:</b> drag the brain to spin it, scroll or pinch to zoom, and click any region. Try <b>Cut in half</b> or <b>X-ray</b> to see deep structures like the hippocampus and amygdala.</div>
       </div>`;
       return;
     }
@@ -117,72 +194,17 @@
   }
 
   /* ---------- Selection ---------- */
-  function select(id, { scroll = false } = {}) {
+  function select(id, { scroll = false, fly = true } = {}) {
     state.sel = id && R[id] ? id : null;
-    if (state.sel && !inView(state.sel, state.view)) {
-      state.view = inView(state.sel, "lateral") ? "lateral" : "medial";
-      renderStage();
-    } else applySel();
+    if (viewer) {
+      if (state.sel) viewer.reveal(state.sel, fly);
+      viewer.setSelected(state.sel);
+    }
     renderPanel();
+    $$("#chips .chip").forEach(c => c.classList.toggle("active", c.dataset.region === state.sel));
     $("#regionSelect").value = state.sel || "";
     history.replaceState(null, "", state.sel ? "#region=" + state.sel : location.pathname);
     if (scroll) $("#explore").scrollIntoView({ behavior: "smooth" });
-  }
-
-  /* ---------- Toolbar ---------- */
-  function initToolbar() {
-    const sel = $("#regionSelect");
-    const cats = [...new Set(REGIONS.map(r => r.cat))];
-    sel.innerHTML = `<option value="">The Brain (overview)</option>` + cats.map(c =>
-      `<optgroup label="${c}">${REGIONS.filter(r => r.cat === c).map(r => `<option value="${r.id}">${r.name}</option>`).join("")}</optgroup>`).join("");
-    sel.addEventListener("change", () => select(sel.value));
-
-    $$(".seg-btn").forEach(b => b.addEventListener("click", () => { state.view = b.dataset.view; renderStage(); }));
-
-    const lb = $("#labelsBtn"), cb = $("#colorBtn");
-    const sync = () => {
-      lb.setAttribute("aria-pressed", state.labels);
-      cb.setAttribute("aria-pressed", state.colored);
-      const svg = $("#stage svg");
-      svg.classList.toggle("show-labels", state.labels);
-      svg.classList.toggle("colored", state.colored);
-    };
-    lb.addEventListener("click", () => { state.labels = !state.labels; store.set("labels", state.labels); sync(); });
-    cb.addEventListener("click", () => { state.colored = !state.colored; store.set("colored", state.colored); sync(); });
-    sync();
-
-    $("#randomBtn").addEventListener("click", () => {
-      let r; do { r = REGIONS[Math.floor(Math.random() * REGIONS.length)]; } while (r.id === state.sel);
-      select(r.id);
-    });
-    $("#fsBtn").addEventListener("click", () => {
-      const w = $("#stageWrap");
-      if (document.fullscreenElement) document.exitFullscreen();
-      else w.requestFullscreen?.();
-    });
-  }
-
-  /* ---------- Stage events ---------- */
-  function initStage() {
-    const stage = $("#stage"), tip = $("#tip"), wrap = $("#stageWrap");
-    stage.addEventListener("click", e => {
-      const p = e.target.closest(".region");
-      if (p) select(p.dataset.id);
-    });
-    stage.addEventListener("keydown", e => {
-      const p = e.target.closest(".region");
-      if (p && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); select(p.dataset.id); }
-    });
-    stage.addEventListener("pointermove", e => {
-      const p = e.target.closest(".region");
-      if (!p || e.pointerType === "touch") { tip.hidden = true; return; }
-      const box = wrap.getBoundingClientRect();
-      tip.textContent = R[p.dataset.id].name;
-      tip.style.left = e.clientX - box.left + "px";
-      tip.style.top = e.clientY - box.top + "px";
-      tip.hidden = false;
-    });
-    stage.addEventListener("pointerleave", () => (tip.hidden = true));
   }
 
   /* ---------- Chips + search ---------- */
@@ -190,7 +212,7 @@
     const q = $("#search").value.trim().toLowerCase();
     const list = REGIONS.filter(r => !q || [r.name, r.group, r.summary, r.functions.join(" "), r.psych].join(" ").toLowerCase().includes(q));
     $("#chips").innerHTML = list.length ? list.map(r => chip(r.id)).join("") : `<span class="muted small">No regions match “${q.replace(/[<>&"]/g, "")}”.</span>`;
-    applySel();
+    $$("#chips .chip").forEach(c => c.classList.toggle("active", c.dataset.region === state.sel));
   }
 
   /* ---------- Topics, chemistry, myths ---------- */
@@ -277,22 +299,51 @@
     }));
   }
 
-  /* ---------- Global ---------- */
+  /* ---------- Boot ---------- */
   document.addEventListener("click", e => {
     const c = e.target.closest("[data-region]");
     if (!c) return;
-    const inExplorer = c.closest("#explore");
-    select(c.dataset.region, { scroll: !inExplorer });
+    select(c.dataset.region, { scroll: !c.closest("#explore") });
   });
   $("#search").addEventListener("input", renderChips);
 
-  renderStage();
   initToolbar();
-  initStage();
   renderChips();
   renderTopics();
   renderTips();
   startQuiz();
-  const m = location.hash.match(/region=(\w+)/);
-  select(m ? m[1] : null);
+  const hashId = (location.hash.match(/region=(\w+)/) || [])[1];
+  select(hashId);
+
+  function boot(v) {
+    viewer = v;
+    renderSegs();
+    $("#spinBtn").hidden = $("#resetBtn").hidden = v.kind !== "3d";
+    syncSpin();
+    viewer.setLabels(state.labels);
+    viewer.setColored(state.colored);
+    if (state.sel) select(state.sel, { fly: true });
+  }
+  const webgl = (() => {
+    try { const c = document.createElement("canvas"); return !!(window.WebGLRenderingContext && (c.getContext("webgl2") || c.getContext("webgl"))); }
+    catch { return false; }
+  })();
+  const fallback = err => {
+    if (err) console.warn("3D brain unavailable, showing the 2D diagram instead.", err);
+    stage.innerHTML = "";
+    boot(create2D());
+  };
+  if (!webgl) fallback();
+  else import("./brain3d.js").then(m => setTimeout(() => {
+    try {
+      stage.innerHTML = "";
+      boot(m.createBrain3D(stage, {
+        regions: R, shapes: SHAPES, outline: OUTLINE,
+        onPick: id => select(id, { fly: false }),
+        onHover: showTip,
+        onModeChange: () => viewer && modeChanged(),
+        onSpinChange: syncSpin
+      }));
+    } catch (e) { fallback(e); }
+  }, 30)).catch(fallback);
 })();
